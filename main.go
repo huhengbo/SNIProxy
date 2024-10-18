@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"flag"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -26,14 +29,13 @@ var (
 	LogFilePath    string // 日志文件
 	EnableDebug    bool   // 调试模式（详细日志）
 
-	ForwardPort = 443       // 要转发至的目标端口
-	cfg         configModel // 配置文件结构
+	cfg configModel // 配置文件结构
 )
 
 // 配置文件结构
 type configModel struct {
 	ForwardRules  []string `yaml:"rules,omitempty"`
-	ListenAddr    string   `yaml:"listen_addr,omitempty"`
+	ListenAddr    []string `yaml:"listen_addr,omitempty"`
 	EnableSocks   bool     `yaml:"enable_socks5,omitempty"`
 	SocksAddr     string   `yaml:"socks_addr,omitempty"`
 	AllowAllHosts bool     `yaml:"allow_all_hosts,omitempty"`
@@ -69,12 +71,6 @@ https://github.com/XIU2/SNIProxy
 	}
 }
 
-// func webPprof() {
-// 	if err := http.ListenAndServe(":6060", nil); err != nil {
-// 		serviceLogger(fmt.Sprintf("启动 pprof 服务失败: %v", err), 31, false)
-// 	}
-// }
-
 func main() {
 	data, err := os.ReadFile(ConfigFilePath) // 读取配置文件
 	if err != nil {
@@ -95,16 +91,22 @@ func main() {
 	serviceLogger(fmt.Sprintf("调试模式: %v", EnableDebug), 32, false)
 	serviceLogger(fmt.Sprintf("前置代理: %v", cfg.EnableSocks), 32, false)
 	serviceLogger(fmt.Sprintf("任意域名: %v", cfg.AllowAllHosts), 32, false)
+	// 启动每个端口的监听器
+	for _, addr := range cfg.ListenAddr {
+		go startSniProxy(addr) // 启动 SNI Proxy
+	}
 
-	// go webPprof()   // 启动 pprof 服务
-	startSniProxy() // 启动 SNI Proxy
+	ch := make(chan os.Signal, 2)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	s := <-ch
+	fmt.Printf("\n接收到信号 %s, 退出.\n", s)
 }
 
 // 启动 SNI Proxy
-func startSniProxy() {
+func startSniProxy(listenAddr string) {
 	_, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	listener, err := net.Listen("tcp", cfg.ListenAddr)
+	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		serviceLogger(fmt.Sprintf("监听失败: %v", err), 31, false)
 		os.Exit(1)
@@ -126,20 +128,20 @@ func startSniProxy() {
 	}(listener)
 	ch := make(chan os.Signal, 2)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
-	s := <-ch
+	_ = <-ch
 	cancel()
-	fmt.Printf("\n接收到信号 %s, 退出.\n", s)
 }
 
 // 处理新连接
 func serve(c net.Conn, raddr string) {
 	defer c.Close()
-
 	buf := make([]byte, 2048)
 	var fullHeader []byte
 	const maxAttempts = 2
 	attempts := 0
-
+	remoteHost := ""
+	// 获取本地地址 (目标地址)
+	localAddr := c.LocalAddr().(*net.TCPAddr)
 	for {
 		n, err := c.Read(buf)
 		if err != nil && err != io.EOF {
@@ -147,7 +149,17 @@ func serve(c net.Conn, raddr string) {
 			return
 		}
 		fullHeader = append(fullHeader, buf[:n]...)
-
+		if fullHeader[0] != 0x16 {
+			reader := bufio.NewReader(bytes.NewReader(fullHeader))
+			req, err := http.ReadRequest(reader)
+			if err != nil && err != io.EOF {
+				serviceLogger(fmt.Sprintf("读取host信息时出错: %v", err), 31, false)
+				return
+			}
+			remoteHost = req.Host
+			//获取host信息
+			break
+		}
 		if len(fullHeader) < 5 { // 判断是不是 TLS 握手消息
 			serviceLogger("不是 TLS 握手消息", 31, true)
 			return
@@ -168,20 +180,24 @@ func serve(c net.Conn, raddr string) {
 	ServerName := getSNIServerName(fullHeader) // 获取 SNI 域名
 
 	if ServerName == "" {
-		serviceLogger("未找到 SNI 域名, 忽略...", 31, true)
-		return
+		if len(remoteHost) > 0 {
+			ServerName = remoteHost
+		} else {
+			serviceLogger("未找到 SNI 域名, 忽略...", 31, true)
+			return
+		}
 	}
 
 	if cfg.AllowAllHosts { // 如果 allow_all_hosts 为 true 则代表无需判断 SNI 域名
-		serviceLogger(fmt.Sprintf("转发目标: %s:%d", ServerName, ForwardPort), 32, false)
-		forward(c, fullHeader, fmt.Sprintf("%s:%d", ServerName, ForwardPort), raddr)
+		serviceLogger(fmt.Sprintf("转发目标: %s:%d", ServerName, localAddr.Port), 32, false)
+		forward(c, fullHeader, fmt.Sprintf("%s:%d", ServerName, localAddr.Port), raddr)
 		return
 	}
 
 	for _, rule := range cfg.ForwardRules { // 循环遍历 Rules 中指定的白名单域名
 		if strings.Contains(ServerName, rule) { // 如果 SNI 域名中包含 Rule 白名单域名（例如 www.aa.com 中包含 aa.com）则转发该连接
-			serviceLogger(fmt.Sprintf("转发目标: %s:%d", ServerName, ForwardPort), 32, false)
-			forward(c, fullHeader, fmt.Sprintf("%s:%d", ServerName, ForwardPort), raddr)
+			serviceLogger(fmt.Sprintf("转发目标: %s:%d", ServerName, localAddr), 32, false)
+			forward(c, fullHeader, fmt.Sprintf("%s:%d", ServerName, localAddr), raddr)
 		}
 	}
 }
