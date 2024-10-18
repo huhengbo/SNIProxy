@@ -424,21 +424,6 @@ systemctl restart sniproxy
 
 ---
 
-## 问题反馈
-
-如果你遇到什么问题，可以先去 [**Issues**](https://github.com/XIU2/SNIProxy/issues)、[Discussions](https://github.com/XIU2/SNIProxy/discussions) 里看看是否有别人问过了（记得去看下  [**Closed**](https://github.com/XIU2/SNIProxy/issues?q=is%3Aissue+is%3Aclosed) 的）。如果没找到类似问题，请新开个 [**Issues**](https://github.com/XIU2/SNIProxy/issues/new) 来告诉我！
-
-> [!NOTE]
-> _与 `反馈问题、功能建议` 无关的，请前往项目内部 论坛 讨论（上面的 `💬 Discussions`_
-
----
-
-## 赞赏支持
-
-![微信赞赏](https://github.com/XIU2/XIU2/blob/master/img/zs-01.png)![支付宝赞赏](https://github.com/XIU2/XIU2/blob/master/img/zs-02.png)
-
----
-
 ## 手动编译
 
 <details>
