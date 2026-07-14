@@ -1,17 +1,31 @@
-# 监听端口（注意需要引号）
-listen_addr:
+# 监听地址
+listen:
   - ":80"
   - ":443"
 
-# 可选：启用 Socks5 前置代理
-#enable_socks5: true
-# 可选：配置 Socks5 代理地址
-#socks_addr: 127.0.0.1:40000
+# 指标与健康检查（留空则不启用）
+# metrics_addr: "127.0.0.1:9100"
 
-# 可选：允许所有域名（会忽略下面的 rules 列表）
-#allow_all_hosts: true
+# 超时与连接上限（支持 "10s"/"5m" 或整数秒）
+# dial_timeout: 10s
+# idle_timeout: 5m
+# header_timeout: 5s
+# max_conns: 10000
 
-# 可选：仅允许指定域名
+# 可选：SOCKS5 前置代理（失败不会静默降级直连）
+# socks5:
+#   enable: true
+#   addr: 127.0.0.1:40000
+
+# 允许所有域名（true 时忽略 rules）
+# allow_all_hosts: true
+
+# 转发规则（仅对象格式；host 必填）
 rules:
-  - example.com
-  - b.example2.com
+  - host: example.com
+  - host: b.example2.com
+  # - host: "*.cdn.example.com"
+  #   backend: 10.0.0.5
+  #   port: 443
+  # - host: api.example.com
+  #   backend: 127.0.0.1:8443

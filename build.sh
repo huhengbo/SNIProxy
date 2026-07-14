@@ -1,71 +1,64 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# 设置版本号
-version="v1.0.5"
+# 版本：优先 git tag，其次环境变量，最后 dev
+if [[ -n "${VERSION:-}" ]]; then
+  version="${VERSION}"
+elif git describe --tags --always --dirty >/dev/null 2>&1; then
+  version="$(git describe --tags --always --dirty)"
+else
+  version="dev"
+fi
 
-# 打包的输出目录
-output_dir="Releases"
+output_dir="${OUTPUT_DIR:-dist}"
 
-# 定义所有的目标平台和架构
-# 格式为：操作系统-架构
-platforms=("linux-amd64" "linux-arm64" "windows-amd64" "darwin-amd64" "darwin-arm64")
+mkdir -p "${output_dir}"
+echo "版本: ${version}"
+echo "输出: ${output_dir}/"
 
-# 遍历所有平台进行打包
-for platform in "${platforms[@]}"; do
-    # 分割操作系统和架构
-    IFS="-" read -r GOOS GOARCH <<< "$platform"
+while read -r GOOS GOARCH EXT; do
+  [[ -z "${GOOS}" ]] && continue
+  name="sniproxy_${GOOS}_${GOARCH}"
+  outdir="${output_dir}/${name}"
+  mkdir -p "${outdir}"
 
-    # 设置输出文件夹和文件名路径
-    output_folder="${output_dir}/sniproxy_${GOOS}_${GOARCH}"
-    output_file="${output_folder}/sniproxy"
+  bin="${outdir}/sniproxy"
+  if [[ "${GOOS}" == "windows" ]]; then
+    bin="${bin}.exe"
+  fi
 
-    # 针对Windows的输出文件需要带.exe后缀
-    if [ "$GOOS" = "windows" ]; then
-        output_file="${output_file}.exe"
-    fi
+  echo "打包 ${GOOS}/${GOARCH} ..."
+  CGO_ENABLED=0 GOOS="${GOOS}" GOARCH="${GOARCH}" go build -trimpath \
+    -ldflags "-s -w -X main.version=${version}" \
+    -o "${bin}" .
 
-    # 创建目标目录（如果不存在）
-    mkdir -p "$output_folder"
+  cp config.yaml "${outdir}/"
+  [[ -f deploy/sniproxy.service ]] && cp deploy/sniproxy.service "${outdir}/"
+  [[ -f LICENSE ]] && cp LICENSE "${outdir}/"
 
-    # 打包
-    echo "正在打包 $GOOS $GOARCH ..."
-    GOOS=$GOOS GOARCH=$GOARCH go build -o "$output_file" -ldflags "-s -w -X main.version=$version"
+  if [[ "${EXT}" == "tar.gz" ]]; then
+    tar -czf "${output_dir}/${name}.tar.gz" -C "${outdir}" .
+  else
+    (cd "${output_dir}" && zip -qr "${name}.zip" "${name}")
+  fi
+  rm -rf "${outdir}"
+  echo "  -> ${output_dir}/${name}.${EXT}"
+done <<EOF
+linux amd64 tar.gz
+linux arm64 tar.gz
+windows amd64 zip
+darwin amd64 zip
+darwin arm64 zip
+EOF
 
-    # 检查打包是否成功
-    if [ $? -ne 0 ]; then
-        echo "打包 $GOOS $GOARCH 失败！"
-        exit 1
-    fi
+(
+  cd "${output_dir}"
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 *.{tar.gz,zip} > checksums.txt 2>/dev/null || true
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum *.{tar.gz,zip} > checksums.txt 2>/dev/null || true
+  fi
+)
 
-    # 复制 config.yaml 文件到目标目录
-    if [ -f "config.yaml" ]; then
-        cp config.yaml "$output_folder/"
-    else
-        echo "未找到 config.yaml 文件，跳过复制。"
-    fi
-
-    # 打包完成，开始压缩文件
-    if [ "$GOOS" = "linux" ]; then
-        # 对于Linux，使用 tar.gz 格式
-        tar -czvf "${output_folder}.tar.gz" -C "$output_folder" .
-        if [ $? -ne 0 ]; then
-            echo "压缩 $GOOS $GOARCH 失败！"
-            exit 1
-        fi
-        # 删除临时文件夹
-        rm -rf "$output_folder"
-    else
-        # 对于Windows和macOS，使用 zip 格式
-        zip -r "${output_folder}.zip" "$output_folder"
-        if [ $? -ne 0 ]; then
-            echo "压缩 $GOOS $GOARCH 失败！"
-            exit 1
-        fi
-        # 删除临时文件夹
-        rm -rf "$output_folder"
-    fi
-
-    echo "打包并压缩 $GOOS $GOARCH 成功！"
-done
-
-echo "所有平台打包并压缩完成！"
+echo "完成。产物在 ${output_dir}/"
+ls -lah "${output_dir}/"

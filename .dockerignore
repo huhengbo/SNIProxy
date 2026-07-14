@@ -1,0 +1,10 @@
+.git
+.github
+.idea
+Releases
+dist
+*.md
+*.test
+sniproxy
+SNIProxy
+.DS_Store

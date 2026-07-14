@@ -14,7 +14,13 @@
 
 ## 增加功能
 
-- 补充**支持**非标端口，多端口，非TLS/SSL请求
+- 多端口监听、非 TLS/HTTP Host 识别
+- 通配符规则（`*.example.com`）、`backend`/`port` 自定义后端
+- 首包/空闲超时、最大连接数、优雅退出
+- Prometheus 指标（`/metrics`）与健康检查（`/healthz`）
+- `SIGHUP` / `systemctl reload` 热加载配置（`listen` 变更需重启）
+- systemd 单元、Docker 镜像、GitHub Actions 自动发版
+- **不兼容旧版配置**：`listen_addr` / 字符串 `rules` / 扁平 `enable_socks5` 已移除
 
 
 ## \# 使用方法
@@ -158,6 +164,12 @@ https://github.com/huhengbo/SNIProxy
         程序版本
     -h
         帮助说明
+
+信号：
+    SIGHUP
+        热加载配置（listen 变更需重启）
+    SIGINT / SIGTERM
+        优雅退出
 ```
 
 ---
@@ -171,38 +183,45 @@ https://github.com/huhengbo/SNIProxy
 
 ---
 
-> **注意：** 配置文件是 YAML 格式，即按照缩进（即每行前面的空格数量）来确定层级关系的，因此不懂的话请按照默认配置文件内示例的格式为准，其中 `#` 的是注释（会被程序忽略），不需要的配置可以注释掉。
-
-目前配置文件中的配置项没几个，分别为：
+> **注意：** 配置为 YAML。`#` 为注释。旧版字段（`listen_addr`、字符串 `rules`、`enable_socks5`/`socks_addr`）**已不支持**，请按下方格式迁移。
 
 ```yaml
-# 监听端口（注意需要引号），常见示例如下：
-# ":443"            省略 IP 只写端口，代表监听本机所有 IPv4+IPv6 地址的 443 端口
-# "0.0.0.0:443"     代表监听本机所有 IPv4 地址的 443 端口
-# "127.0.0.1:443"   代表监听本机本地 IPv4 地址的 443 端口（只有本机可访问）
-# "[::]:443"        代表监听本机所有 IPv6 地址的 443 端口
-# "[::1]:443"       代表监听本机本地 IPv6 地址的 443 端口（只有本机可访问）
-# 上面示例中的 IP 地址也可以换成例如你的外网 IP，这样的话就只能从该外网 IP 访问了
-listen_addr: 
+# 监听地址（需要引号）
+# ":443" / "0.0.0.0:443" / "127.0.0.1:443" / "[::]:443"
+listen:
   - ":443"
 
-# 可选：启用 Socks5 前置代理
-# （启用前：访客 <=> SNIProxy <=> 目标网站
-# （启用后：访客 <=> SNIProxy <=> Socks5 <=> 目标网站
-# （比如可以套 WARP，那样就变成：访客 <=> SNIProxy <=> WARP <=> 目标网站
-enable_socks5: true
-# 可选：配置 Socks5 代理地址
-socks_addr: 127.0.0.1:40000
+# 指标与健康检查（Prometheus 文本格式）
+# GET /metrics  /healthz  /readyz
+metrics_addr: "127.0.0.1:9100"
 
-# 可选：允许所有域名（开启后会忽略下面的 rules 列表）
-allow_all_hosts: true
+# 超时与连接上限（"10s"/"5m" 或整数秒）
+dial_timeout: 10s
+idle_timeout: 5m
+header_timeout: 5s
+max_conns: 10000
 
-# 可选：仅允许指定域名（和上面的 allow_all_hosts 二选一）
-# 指定域名后，则代表允许 域名自身 及其 所有子域名 访问服务（以下方两个为例，√ 代表允许，× 代表阻止）
+# SOCKS5 前置代理（失败不会静默降级直连）
+socks5:
+  enable: false
+  addr: 127.0.0.1:40000
+
+# 允许所有域名（true 时忽略 rules）
+allow_all_hosts: false
+
+# 转发规则：仅对象格式，host 必填
+# 匹配：精确或后缀边界（example.com 允许 a.example.com，拒绝 evil-example.com）
 rules:
-  - example.com #    example.com  √ 、a.example.com  √ 、a.a.example.com  √
-  - b.example2.com # example2.com × 、b.example2.com √ 、c.b.example2.com √
+  - host: example.com              # 目标 = SNI/Host + 本地监听端口
+  - host: b.example2.com
+  - host: "*.cdn.example.com"      # 通配符
+    backend: 10.0.0.5
+    port: 443
+  - host: api.example.com
+    backend: 127.0.0.1:8443
 ```
+
+热加载：`kill -HUP <pid>` 重载 rules / socks5 / 超时等；**`listen` 变更需重启进程**。
 
 ---
 
@@ -211,110 +230,152 @@ rules:
 1. 允许所有域名访问
 
 ```yaml
-listen_addr: 
+listen:
   - ":443"
 allow_all_hosts: true
 ```
 
-> 注意，开启 allow_all_hosts 时，可能会被他人扫描到而滥用，请悉知！
-> 建议做一些限制，例如只使用 IPv6（`"[::]:443"`）或防火墙限制 443 端口的可访问 IP。
+> 开启 `allow_all_hosts` 可能被滥用；建议限制来源 IP 或仅监听 IPv6。
 
 2. 仅允许指定域名
 
 ```yaml
-listen_addr: 
+listen:
   - ":443"
 rules:
-  - example.com
-  - b.example2.com
+  - host: example.com
+  - host: b.example2.com
 ```
 
-3. 允许所有域名访问 + 启用前置代理
+3. 通配符 + 自定义后端
 
 ```yaml
-listen_addr: 
+listen:
   - ":443"
-enable_socks5: true
-socks_addr: 127.0.0.1:40000
-allow_all_hosts: true
-```
-
-4. 仅允许指定域名 + 启用前置代理
-
-```yaml
-listen_addr: 
-  - ":443"
-enable_socks5: true
-socks_addr: 127.0.0.1:40000
 rules:
-  - example.com
-  - b.example2.com
+  - host: "*.cdn.example.com"
+    backend: 10.0.0.5
+    port: 443
+  - host: api.example.com
+    backend: 127.0.0.1:8443
+```
+
+4. 前置代理 + 指标
+
+```yaml
+listen:
+  - ":443"
+metrics_addr: "127.0.0.1:9100"
+socks5:
+  enable: true
+  addr: 127.0.0.1:40000
+rules:
+  - host: example.com
 ```
 
 </details>
 
 ---
 
-#### \# Linux 配置为系统服务 (systemd - 以支持开机启动、守护进程等)
+#### \# Linux 配置为系统服务 (systemd)
 
 <details>
 <summary><code><strong>「 点击展开 查看内容 」</strong></code></summary>
 
 ---
 
-新建一个空的名叫 **sniproxy** 的系统服务配置文件：
+仓库已提供正式单元文件与安装脚本：
 
-```yaml
-nano /etc/systemd/system/sniproxy.service
+- `deploy/sniproxy.service` — 含 `ExecReload=HUP`、文件句柄上限、`CAP_NET_BIND_SERVICE`
+- `deploy/install.sh` — 创建用户、安装二进制与服务
+
+```bash
+# 1. 编译（或从 Releases 下载 linux 包）
+CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=v1.2.0" -o sniproxy .
+
+# 2. 安装（需 root）
+sudo bash deploy/install.sh
+
+# 3. 编辑配置后启动
+sudo nano /opt/sniproxy/config.yaml
+sudo systemctl start sniproxy
+sudo systemctl status sniproxy
 ```
 
-修改以下内容后（`ExecStart=` 后面的程序路径、参数）后粘贴进文件内：
+常用命令：
 
-```ini
-[Unit]
-Description=SNI Proxy
-After=network.target
-
-[Service]
-ExecStart=/home/sniproxy/sniproxy -c /home/sniproxy/config.yaml -l /home/sniproxy/sni.log
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
-
-> 其中 `Restart=on-failure` 表示，当程序非正常退出时，会自动恢复启动，也就是常说的守护进程。
-
-设置 **sniproxy** 开机启动并立即启动：
-
-```yaml
-# 启用该系统服务 并 允许开机启动
-systemctl enable sniproxy
-
-# 立即启动
-systemctl start sniproxy
-```
-
-其他可能会用到的命令：
-
-```yaml
-# 停止
+```bash
 systemctl stop sniproxy
+systemctl restart sniproxy          # 完整重启
+systemctl reload sniproxy           # 热加载配置（SIGHUP）
+journalctl -u sniproxy -f           # 标准输出日志
+tail -f /var/log/sniproxy/sni.log   # 文件日志（若配置了 -l）
+systemctl daemon-reload             # 修改 .service 后执行
+```
 
-# 重启
-systemctl restart sniproxy
+默认路径：
 
-# 查看运行状态
-systemctl status sniproxy
+| 项 | 路径 |
+|----|------|
+| 二进制 | `/opt/sniproxy/sniproxy` |
+| 配置 | `/opt/sniproxy/config.yaml` |
+| 日志 | `/var/log/sniproxy/sni.log` |
+| 单元 | `/etc/systemd/system/sniproxy.service` |
 
-# 查看完整日志
-cat /home/sniproxy/sni.log
+</details>
 
-# 实时监听日志（会实时显示最新日志内容）
-tail -f /home/sniproxy/sni.log
+---
 
-# 如果你修改了 /etc/systemd/system/sniproxy.service 配置文件，那么需要先重载配置后才能启动/重启 sniproxy 服务
-systemctl daemon-reload
+#### \# Docker
+
+<details>
+<summary><code><strong>「 点击展开 查看内容 」</strong></code></summary>
+
+---
+
+```bash
+# 构建
+docker build --build-arg VERSION=v1.2.0 -t sniproxy:latest .
+
+# 运行（映射 80/443，挂载自定义配置）
+docker run -d --name sniproxy --restart unless-stopped \
+  -p 80:80 -p 443:443 -p 9100:9100 \
+  -v "$PWD/config.yaml:/etc/sniproxy/config.yaml:ro" \
+  sniproxy:latest
+```
+
+指标（需在配置中设置 `metrics_addr: "0.0.0.0:9100"`）：
+
+```bash
+curl -s http://127.0.0.1:9100/metrics
+curl -s http://127.0.0.1:9100/healthz
+```
+
+</details>
+
+---
+
+#### \# 本地多平台打包 / 发版
+
+<details>
+<summary><code><strong>「 点击展开 查看内容 」</strong></code></summary>
+
+---
+
+```bash
+# 本地打包到 dist/（版本取自 git tag 或 VERSION 环境变量）
+./build.sh
+VERSION=v1.2.0 ./build.sh
+```
+
+GitHub Actions：
+
+- `CI`：push / PR 时 `go vet` + `go test -race` + build
+- `Release`：推送 `v*` tag 时自动构建各平台压缩包并上传 Release（含 `checksums.txt`）
+
+```bash
+git tag v1.2.0
+git push origin v1.2.0
 ```
 
 </details>

@@ -1,0 +1,37 @@
+[Unit]
+Description=SNIProxy - TLS SNI / HTTP Host forward proxy
+Documentation=https://github.com/huhengbo/SNIProxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sniproxy
+Group=sniproxy
+WorkingDirectory=/opt/sniproxy
+ExecStart=/opt/sniproxy/sniproxy -c /opt/sniproxy/config.yaml -l /var/log/sniproxy/sni.log
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2s
+KillMode=mixed
+TimeoutStopSec=15s
+LimitNOFILE=1048576
+
+# 允许绑定 80/443 等特权端口，无需完整 root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+# 加固（日志目录与配置目录需可写/可读）
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/log/sniproxy
+ReadOnlyPaths=/opt/sniproxy
+
+[Install]
+WantedBy=multi-user.target

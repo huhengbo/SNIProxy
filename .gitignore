@@ -3,6 +3,8 @@ Releases
 .idea/
 
 *.ds_store
+sniproxy
+SNIProxy
 
 ### Go template
 # Binaries for programs and plugins
